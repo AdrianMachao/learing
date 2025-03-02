@@ -57,7 +57,7 @@ NM已DaemonSet形式部署，YARN与NM的资源管理相互独立，按照自身
 
 ![yarn-k8s-union](./images/yarn-k8s-union.webp)
 
-相比之前的架构多了三个组件，也只说明了调度相关的机器，没有说明如何保障单机侧的Qos
+相比之前的架构多了三个组件，也只说明了调度相关的功能，没有说明如何保障单机侧的Qos
 
 ### RGS（Remote Godel Scheduler）
 

@@ -162,16 +162,31 @@ Alibaba Cloud Linux 2（内核版本`4.19.91-24.al7`开始）和Alibaba Cloud Li
 
 动态调整cfs_quota
 
-### CPU Supress
-
+### CPU Suppress
+![cpu-suppress](./images/cpu-suppress.svg)
 根据压制策略动态调整cfs_quota或者cpuset
 
 ### CPU Evict
+基于CPU饱和度的驱逐策略
 
 ### Memory Evict
+基于内存用量的驱逐策略
 
 ### 干扰检测
+若您使用CPI Collector，请确保您的机器支持获取Cycles、Instructions这两个Kernel PMU（Performance Monitoring Unit）事件
+```
+$ perf list
+List of pre-defined events (to be used in -e):
 
+  branch-instructions OR branches                    [Hardware event]
+  branch-misses                                      [Hardware event]
+  bus-cycles                                         [Hardware event]
+  ...
+
+  cpu-cycles OR cpu/cpu-cycles/                      [Kernel PMU event]
+  ...
+  instructions OR cpu/instructions/                  [Kernel PMU event]
+```
 
 
 ## LLC&MBA
@@ -191,6 +206,79 @@ RDT的主要功能有以下几个：
 5. CDP（Code & Data Prioritization）：细化的Code-Cache和Data-Cache的分配
 
 在混合部署场景下，[cgroup](https://zhida.zhihu.com/search?content_id=231916783&content_type=Article&match_order=1&q=cgroup&zhida_source=entity)提供了粗粒度的CPU、内存、IO等资源的隔离和分配，但是从软件层面无法对LLC和内存带宽等共享资源进行隔离，离线业务可以通过争抢LLC和内存带宽来干扰在线业务。RDT从硬件层面提供了细粒度的LLC资源的分配和监控能力，在混部场景运用广泛
+
+
+# NUMA
+## Node
+表示一个CPU分组，可以有多个CPU组成，每个Node都有自己的本地资源，包括内存、IO等。
+每个Node之间通过互联模块（QPI）进行通信，因此每个Node除了可以访问自己的本地内存之外，还可以访问远端内存，只不过性能会差一些
+
+## Socket
+Socket是物理上的概念，表示一颗物理CPU的分装，是主板上的CPU插槽
+Node是逻辑上的概念，一个Numa Node可以有一个或者多个Socket
+
+## Core
+Core 就是 Socket 里独立的一组程序执行单元，称之为物理核
+
+## Thread
+有了物理核，自然就有逻辑核，Thread 就是逻辑核。更专业的说法应该称之为超线程
+
+所以，几个概念从大到小依次排序是：
+Node > Socket > Core -> Processor
+
+
+# 调度
+## kubelet CPU manager
+### 应用烈性
+Quaranteed：request == limit
+Burstable: request != limit
+BestEffort: 无request和limit
+### 资源管理
+Node Capacity：Node的硬件资源总量
+kube-reserved：给k8s系统进程预留的资源(包括kubelet、container runtime、node problem detector等，但不会给以pod形式起的k8s系统进程预留资源)
+system-reserved：给linux系统守护进程预留的资源
+### CPU管理
+CPU资源池：all-（--kube-reserved 或 --system-reserved）
+绑核策略
+cpu-manager-policy：none
+不绑核，共享CPU资源池
+cpu-manager-policy：static
+可绑核，使用CPU资源池或者--reserved-cpus指定
+
+## koordinator CPU manager
+针对混部场景下，需要对延迟敏感工作负载的Qos进行微调，以满足混部性能的要求，增强kubelet CPU编排功能
+![cpu-qos-orchestration](./images/qos-cpu-orchestration.png)
+### 资源池
+CPU Shared Pool:Burstable以及LSE类型使用之外的资源池
+statically exclusive CPUs：Quarantee并且资源为整数类型以及LSE/LSR使用的一组独占CPU
+BE Shared Pool:BestEffort以及BE应用的Pod可以运行的CPU池
+
+### CPU管理策略
+对于BestEffort和BE应用
+- 优先使用kubelet预留的资源
+- koordlet 可以使用节点中的所有 CPU，但不包括由具有整数 CPU 的 K8s Guaranteed 和 Koordinator LSE Pod 分配的 CPU
+对于Burstable和LS应用
+- 当 koordlet 启动时，计算 CPU Shared Pool 并将共享池应用到节点中的所有 Burstable 和 LS Pod，即更新它们的 cpu cgroups, 设置 cpuset。在创建或销毁 LSE/LSR Pod 时执行相同的逻辑
+- koordlet 会忽略 kubelet 预留的 CPU，将其替换为 Koordinator 定义的 CPU Shared Pool
+对于Guaranteed
+- 如果 Pod 的 annotations 中有 koord-scheduler 更新的 scheduling.koordinator.sh/resource-status，在 Sandbox/Container 创建阶段，则会替换 kubelet CRI 请求中的 CPUSet。
+- kubelet 有时会调用 CRI 中定义的 Update 方法来更新容器 cgroup 以设置新的 CPU，因此 koordlet 和 koord-runtime-proxy 需要 Hook 该方法
+自动调整CPU Shared Pool大小
+- koordlet 会根据 Pod 创建/销毁等变化自动调整 CPU Shared Pool 的大小。如果 CPU Shared Pool 发生变化，koordlet 应该更新所有使用共享池的 LS/K8s Burstable Pod 的 cgroups
+- 如果 Pod 的 annotationsscheduling.koordinator.sh/resource-status 中指定了对应的 CPU Shared Pool，koordlet 在配置 cgroup 时只需要绑定对应共享池的 CPU 即可
+
+
+### CPU调度编排
+CPUBindPolicy定义了CPU绑定策略。
+Default:不执行任何绑定策略
+FullPCPUS：一种binpack策略，用于分配完成的物理内核，可以有效避免扰邻问题
+SpreadByPCPUs：一种打散策略，如果启用了超线程，使用该策略时，调度器将在物理内核之间均匀的分配逻辑CPU。
+ConstrainedBurst（没有特别理解）：主要帮助 K8s Burstable/Koordinator LS Pod 获得更好性能的特殊策略。使用该策略时，koord-scheduler 会根据 Pod 限制过滤掉具有合适 CPU 共享池的 NUMA 节点的节点
+
+CPUExclusivePolicy定了CPU独占策略，可以帮助解决扰邻问题
+CPUExclusivePolicyDefault：不执行任何策略
+CPUExclusivePolicyPCPULevel： 在分配逻辑CPU时，尽量避免已经被同一个独占策略申请的物理核。是对CPUBindPolicySpreadByPCPUs策略的补充。
+CPUExclusivePolicyNUMANodeLevel：在分配逻辑 CPU 时，尽量避免 NUMA 节点已经被相同的独占策略申请。如果没有满足策略的 NUMA 节点，则降级为CPUExclusivePolicyPCPULevel策略
 
 
 
