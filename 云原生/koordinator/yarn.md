@@ -23,6 +23,8 @@ yarn on k8s为koordinator推荐的一种k8s实现方式，特点是对原生yarn
 ![yarn-on-k8s](./images/yarn-on-k8s.png)
 
 ## 调度
+![koord-yarn-operator](./images/koord-yarn-operator.svg)
+
 yarn on k8s采用双调度器模式，k8s想yarn同步可用的batch资源，yarn会将使用分配的资源同步给k8s，k8s更新到节点的可用batch资源，具体过程如下：
 
 1.koord-manager计算原始Batch总量`origin_batch_total`，并将其记录在K8s的node annotation中
@@ -43,11 +45,32 @@ NM已DaemonSet形式部署，YARN与NM的资源管理相互独立，按照自身
 
 ![node-manager-cgroup](./images/node-manager-cgroup.svg)
 
+1. YARN的Task以LinuxContainerExecutor模式运行，每个Task对应一个单独的cgroup目录
+2. YARN-NM以Pod形式部署在节点，Task由Nodemanager拉起并分配Cgorup目录
+3. 为了区分YARN-NM自身和YARN Task的资源管理，宿主机的cgroup目录会被挂载到YARN Pod内，由NM指定参数配置
+
 ## 单机Qos策略适配
 
 需要在koordlet内部增加一个sidecar，用于采集task任务的信息，针对一些Qos操作，例如驱逐操作，也需要适配。
 
 ![yarn-copilot-agent](./images/yarn-copilot-agent.svg)
+
+koord-yarn-copilot作为单机侧koordlet和YARN-NM之间的沟通桥梁，以sidercar容器的形式同koordlet部署在一起
+koordlet的states informer模块从koord-yarn-copilot获取task元信息
+koordlet的metrics advisor模块从koord-yarn-copilot中获取资源用量信息，koord-yarn-copilot直接提供Prometheus格式的API接口，可以同时满足可观测性指标链路的需求
+koordlet中metric cache支持来自第三方指标的数据存储，可以自定义保存时间
+koordlet的qos manager策略兼容YARN task的目录，对于驱逐操作需要调用koord-yarn-copilot的RPC接口
+
+| QoS策略             | 当前实现方式                                                 | YARN适配方案                                                 |
+| ------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| CPU Group Identity  | guarantee pod及burstable分组整体设2；离线besteffort分组整体设-1 | hadoop-yarn在besteffort下，天然适配                          |
+| CPU Suppress        | 根据节点负载和在线Pod的负载，在container级别修改离线Pod的CPU绑核 | 修改hadoop-yarn目录整体的cpuset                              |
+| Memory QoS for 离线 | 离线Pod设置memoryWmarkMinAdj（优先回收page cache），memoryOomKillGroup（cgroup级别OOM时整组kill） | 设置hadoop-yarn目录的memoryWmarkMinAdj及memoryOomKillGroup   |
+| Memory Evict        | 根据节点用量水位，选择低优先级的离线Pod进行kill根据节点用量水位，选择低优先级的离线Pod进行kill | koordlet从koord-yarn-copilot获取usage和task信息，综合优先级选择要kill的task，将要kill的task发送给koord-yarn-copilot。<br/>由于离线频繁起停，koord-yarn-copilot需要考虑要kill的task已经不存在的情况。例如koordlet将需要回收的内存量和sorted task list发送给koord-yarn-copilot。<br/>考虑给haoop-yarn整组设置memory.limit，控制oom范围降低稳定性风险。 |
+| CPU Evict           | 读取besteffort cgorup分组中的cpu用量和限制信息(cpuset压制看container级别，cfs quota压制看根组），计算资源满足度，根据优先级选择pod进行kill。 | 读取限制信息时考虑hadoop-yarn目录，和koord-yarn-copilot配合驱逐task（与Memory Evict）类似。 |
+| LLC及MBA隔离        | 读取CPU container cgroup级别的tasks id，将其放入到对应的resctrl分组中 | 方案一：将hadoop-yarn的cgroup子目录中的task id放入到对应的resctrl分组（离线频繁起停可能来不及） 方案二：直接将node manager的进程id设置到resctrl-BE分组，需要确定container级别是否会自动继承 |
+| BlkIO QoS           | Doing                                                        | TBD                                                          |
+
 
 
 
@@ -91,3 +114,6 @@ NM已DaemonSet形式部署，YARN与NM的资源管理相互独立，按照自身
 - Webshell：方便用户通过 Web 端进入到容器的 Shell，方便排查问题。
 
 此种方案对yarn有很多改造，包括YARN以及NM，需要对yarn和k8s有较深的理解，并且改造成本也较大，应该只有头部互联网大厂才有能力实施这样的方案。
+
+# Reference
+https://github.com/koordinator-sh/koordinator/discussions/1297

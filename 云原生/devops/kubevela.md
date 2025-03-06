@@ -45,6 +45,10 @@ KubeVela 本身是一个的应用交付与管理控制平面，它架在 Kuberne
 - 插件控制器 负责注册和管理 KubeVela 运行所需要的第三方插件，比如 VelaUX、 Flux、Terraform 组件等等。
 - UI 控制台和 CLI UI 控制台服务于希望开箱即用的开发者用户，CLI 适用于集成 KubeVela 和终端管理的用户。
 
+## X-Definition
+使用X-Definition可以自定义新的模块，例如需要一种新的Component，使用CloudService定义云上应用，可以使用X-Definition重新定义。
+也是模板渲染语言。
+
 ## 运行时基础设施
 
 运行时基础设施是应用实际运行的地方。KubeVela 本身是完全与这些基础设施无关的，因此它允许你面向任何环境（包括 Kubernetes 环境，也包括非 Kubernetes 环境比如云平台和边缘设备等）去交付和管理任何类型的应用。
@@ -54,6 +58,24 @@ KubeVela 本身是一个的应用交付与管理控制平面，它架在 Kuberne
 
 ![kubevela-programmable](./images/kubevela-programmable.png)
 
+# Iac实现
+会创建一个config对象，包括了需要申请的Iac信息
+```
+APIVersion: apps/v1
+Kind: Configuration
+Name: aliyun-oss
+```
+控制器会调用对应的提供商，例如aliyun，会将生成的账号密码作为环境注入到应用对象中
+```
+APIVersion: apps/v1
+Kind: Application
+Spec:
+  Containers:
+    - name: nginx
+      env: 
+        - username: zhangsan
+          password: 123
+```
 
 # 总结
 基于工作流将各个阶段各种能力串起来

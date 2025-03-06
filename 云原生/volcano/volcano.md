@@ -1,4 +1,4 @@
-# 多集群
+# 多集群调度
 ## 背景
 随着企业业务的快速增长，单一Kubernetes集群往往无法满足大规模AI训练和推理任务的需求。用户通常需要管理多个Kubernetes集群，以实现工作负载的统一分发、部署和管理。目前，业界的多集群编排系统（如Karmada）主要针对微服务场景，提供了高可用性和容灾部署能力。然而，在AI作业调度方面，Karmada的能力仍然有限，缺乏对Volcano Job的支持，也无法满足队列管理、多租户公平调度和作业优先级调度等需求。
 
@@ -14,6 +14,14 @@ Volcano Global在Karmada的基础上，提供了以下增强功能，满足多�
 
 ## 架构
 ![volcano-global-desgin](./images/volcano_global_design.svg)
+
+[Volcano global](https://github.com/volcano-sh/volcano-global)主要包含两个组件：
+
+Volcano Webhook: 监听ResourceBinding资源的创建事件，将ResourceBinding设置为暂停状态。
+Volcano Controller: 监听处于暂停状态的ResourceBinding，根据Job所在队列的优先级、Job本身的优先级，对Job进行优先级和公平调度，并运行资源准入机制，决定是否可以调度Job，准入成功后将ResourceBinding解除暂停状态，由Karmada进行资源分发。
+
+## 评价
+目前看该项目并不成熟，只提交了初次代码发布了0.1版本，还没有发布1.0版本
 
 # 网络拓扑调度
 ## API网络拓扑

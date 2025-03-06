@@ -154,8 +154,22 @@ Alibaba Cloud Linux 2（内核版本`4.19.91-24.al7`开始）和Alibaba Cloud Li
 
 需要说明的是Kubernetes在社区1.22版本中提供的容器内存QoS（[Memory QoS](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/#memory-qos-with-cgroup-v2)）特性，仅支持cgroup v2接口，需要在kubelet上手动配置开启，ack-koordinator组件结合不同Alibaba Cloud Linux内核版本提供了容器内存QoS保障的能力，支持依据Pod参数自动配置内存子系统（Memcg），为容器开启[Memcg QoS](https://help.aliyun.com/zh/alinux/user-guide/memcg-qos-function-ensures-system-stability-and-response-speed?spm=a2c4g.11186623.0.0.5d9134f02y4VJ5#concept-2482889)、[Memcg后台异步回收](https://help.aliyun.com/zh/alinux/user-guide/memcg-backend-asynchronous-reclaim#task-2487938)、[Memcg全局最低水位线分级](https://help.aliyun.com/zh/alinux/user-guide/memcg-global-minimum-watermark-rating#task-2492619)等能力
 
+### network
+目前看有两种类型的网络带宽限制
+#### cgroup
 
+使用cgroup控制网络资源的基本思想是将cgroup与已经存在的能提供分类和调度网络数据包功能的网络数据包分类器和调度框架连接起来。
 
+为了达到这一的目的，创建了一种新的cgroup子系统net_cls,该子系统可以让cgroup可以分辨数据包流量是从哪个cgroup中流出的。这是通过给cgroup分配一个classid实现的，classid可以被数据包分类器cls_cgroup使用，从而将数据包过滤到classid匹配的流量类型中，如下图1.所示
+![network-qos-cgroup](./images/network-qos-cgroup.png)
+
+为了尽可能保持架构的简单和非侵入性，当数据包在网络栈中传递的时候，没有将classid存储在数据包中。数据包分类器使用数据包的进程上下文信息（process context information）来查找classid。这样做的缺点是：这种方法是适合在进程上下文中离开网络栈的数据包，例如，这种方法不适合内核生成的数据包（ACKs，ICMP replies等等）或者不适合于数据包在经过数据包分类器之前就进行了排队和重调度的数据包。
+
+流量分类(traffic class)可以以树的形式来组织，也可以包含任何数量的队列规则(qdisc)来实现优先级、带宽限制或公平队列。流量分类必须分配到网络接口(network interface)，因此，如果一个cgroup发送数据到多个网络接口，就需要为每一个网络接口维护一个流量类型
+
+#### 网络插件
+另外一种思路时基于网络插件实现网络带宽限制，例如koordinator使用terway网络插件进行带宽限制
+目前看网络插件都是基于ebpf这些内核模块做流量带宽限制
 ## 其他策略
 
 ### CPU Burst
