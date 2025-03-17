@@ -1,4 +1,4 @@
-# GPU && RDMA联合分布
+# GPU && RDMA联合调度
 ![device-topology-and-network-communication](./images/device-topology-and-network-communication.jpg)
 拓扑调度策略
 samePCIE -> sameNuma -> sameNode
@@ -6,6 +6,9 @@ samePCIE -> sameNuma -> sameNode
 ## multus-CNI
 ![device-topology-and-network-communication](./images/device-topology-and-network-communication.jpg)
 挂载多网卡，rdma作为第二张网卡挂载到pod中
+
+## SR-IOV
+网卡虚拟机制，具备隔离功能，生成对应的pf/vf
 
 ## 通信协议
 NCCL：一般是GPU时用的通信协议
