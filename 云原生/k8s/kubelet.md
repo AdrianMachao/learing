@@ -360,6 +360,133 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, _ v1.PodStatus, podStat
 }
 ```
 
+kubeGenericRuntimeManager.computePodActions 检查 Pod Spec 是否发生变更，并且返回 PodActions，记录为了达到期望状态需要执行的变更内容
+```
+pkg/kubelet/kuberuntime/kuberuntime_manager.go:451
+
+// computePodActions checks whether the pod spec has changed and returns the changes if true.
+func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *kubecontainer.PodStatus) podActions {
+    glog.V(5).Infof("Syncing Pod %q: %+v", format.Pod(pod), pod)
+
+    createPodSandbox, attempt, sandboxID := m.podSandboxChanged(pod, podStatus)
+    changes := podActions{
+        KillPod:           createPodSandbox,
+        CreateSandbox:     createPodSandbox,
+        SandboxID:         sandboxID,
+        Attempt:           attempt,
+        ContainersToStart: []int{},
+        ContainersToKill:  make(map[kubecontainer.ContainerID]containerToKillInfo),
+    }
+
+    // If we need to (re-)create the pod sandbox, everything will need to be
+    // killed and recreated, and init containers should be purged.
+    if createPodSandbox {
+        if !shouldRestartOnFailure(pod) && attempt != 0 {
+            // Should not restart the pod, just return.
+            return changes
+        }
+        if len(pod.Spec.InitContainers) != 0 {
+            // Pod has init containers, return the first one.
+            changes.NextInitContainerToStart = &pod.Spec.InitContainers[0]
+            return changes
+        }
+        // Start all containers by default but exclude the ones that succeeded if
+        // RestartPolicy is OnFailure.
+        for idx, c := range pod.Spec.Containers {
+            if containerSucceeded(&c, podStatus) && pod.Spec.RestartPolicy == v1.RestartPolicyOnFailure {
+                continue
+            }
+            changes.ContainersToStart = append(changes.ContainersToStart, idx)
+        }
+        return changes
+    }
+    // Check initialization progress.
+    initLastStatus, next, done := findNextInitContainerToRun(pod, podStatus)
+    if !done {
+        if next != nil {
+            initFailed := initLastStatus != nil && isContainerFailed(initLastStatus)
+            if initFailed && !shouldRestartOnFailure(pod) {
+                changes.KillPod = true
+            } else {
+                changes.NextInitContainerToStart = next
+            }
+        }
+        // Initialization failed or still in progress. Skip inspecting non-init
+        // containers.
+        return changes
+    }
+
+    // Number of running containers to keep.
+    keepCount := 0
+    // check the status of containers.
+    for idx, container := range pod.Spec.Containers {
+        containerStatus := podStatus.FindContainerStatusByName(container.Name)
+
+        // Call internal container post-stop lifecycle hook for any non-running container so that any
+        // allocated cpus are released immediately. If the container is restarted, cpus will be re-allocated
+        // to it.
+        if containerStatus != nil && containerStatus.State != kubecontainer.ContainerStateRunning {
+            if err := m.internalLifecycle.PostStopContainer(containerStatus.ID.ID); err != nil {
+                glog.Errorf("internal container post-stop lifecycle hook failed for container %v in pod %v with error %v",
+                    container.Name, pod.Name, err)
+            }
+        }
+        // If container does not exist, or is not running, check whether we
+        // need to restart it.
+        if containerStatus == nil || containerStatus.State != kubecontainer.ContainerStateRunning {
+            if kubecontainer.ShouldContainerBeRestarted(&container, pod, podStatus) {
+                message := fmt.Sprintf("Container %+v is dead, but RestartPolicy says that we should restart it.", container)
+                glog.V(3).Infof(message)
+                changes.ContainersToStart = append(changes.ContainersToStart, idx)
+            }
+            continue
+        }
+        // The container is running, but kill the container if any of the following condition is met.
+        reason := ""
+        restart := shouldRestartOnFailure(pod)
+        if expectedHash, actualHash, changed := containerChanged(&container, containerStatus); changed {
+            reason = fmt.Sprintf("Container spec hash changed (%d vs %d).", actualHash, expectedHash)
+            // Restart regardless of the restart policy because the container
+            // spec changed.
+            restart = true
+        } else if liveness, found := m.livenessManager.Get(containerStatus.ID); found && liveness == proberesults.Failure {
+            // If the container failed the liveness probe, we should kill it.
+            reason = "Container failed liveness probe."
+        } else {
+            // Keep the container.
+            keepCount += 1
+            continue
+        }
+        // We need to kill the container, but if we also want to restart the
+        // container afterwards, make the intent clear in the message. Also do
+        // not kill the entire pod since we expect container to be running eventually.
+        message := reason
+        if restart {
+            message = fmt.Sprintf("%s. Container will be killed and recreated.", message)
+            changes.ContainersToStart = append(changes.ContainersToStart, idx)
+        }
+        changes.ContainersToKill[containerStatus.ID] = containerToKillInfo{
+            name:      containerStatus.Name,
+            container: &pod.Spec.Containers[idx],
+            message:   message,
+        }
+        glog.V(2).Infof("Container %q (%q) of pod %s: %s", container.Name, containerStatus.ID, format.Pod(pod), message)
+    }
+    if keepCount == 0 && len(changes.ContainersToStart) == 0 {
+        changes.KillPod = true
+    }
+    return changes
+}
+```
+- computePodActions 会检查 Pod Sandbox 是否发生变更、各个 Container（包括 InitContainer）的状态等因素来决定是否要重建整个 Pod。
+- 遍历 Pod 内所有 Containers：
+  - 如果容器还没启动，则会根据 Container 的重启策略决定是否将 Container 添加到待启动容器列表中(PodActions.ContainersToStart)；
+  - 如果容器的 Spec 发生变更(比较 Hash 值），则无论重启策略是什么，都要根据新的 Spec 重建容器，将 Container 添加到待启动容器列表中
+  - (PodActions.ContainersToStart)；
+  - 如果 Container Spec 没有变更，liveness probe 也是成功的，则该 Container 将保持不动，否则会将容器将入到待 Kill 列表中（PodActions.ContainersToKill）；
+
+因此，computePodActions 的关键是的计算出了待启动的和待 Kill 的容器列表。
+
 ## 启动容器
 1、拉取镜像
 2、生成业务容器的配置信息

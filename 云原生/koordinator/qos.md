@@ -1,12 +1,11 @@
 # Cgroup
-
 Cgroups 是 control groups 的缩写，是Linux内核提供的一种可以限制，记录，隔离进程组(process groups)所使用物理资源的机制。最初有google工程师提出，后来被整合进Linux的内核。因此，Cgroups为容器实现虚拟化提供了基本保证，是构建Docker,LXC等一系列虚拟化管理工具的基石。
 
 ## 作用
 
 - 资源限制(Resource limiting): Cgroups可以对进程组使用的资源总额进行限制。如对特定的进程进行内存使用上限限制，当超出上限时，会触发OOM。
 - 优先级分配(Prioritization):通过分配的CPU时间片数量及硬盘IO带宽大小，实际上就相当于控制了进程运行的优先级。
-- 资源统计（Accounting): Cgroups可以统计系统的资源使用量，如CPU使用时长、内存用量等等，这个功能非常适用于计费。
+- 资源统计（Accounting）: Cgroups可以统计系统的资源使用量，如CPU使用时长、内存用量等等，这个功能非常适用于计费。
 - 进程控制（Control）：Cgroups可以对进程组执行挂起、恢复等操作。
 
 ## 组成
@@ -243,7 +242,7 @@ Node > Socket > Core -> Processor
 
 # 调度
 ## kubelet CPU manager
-### 应用烈性
+### 应用等级
 Quaranteed：request == limit
 Burstable: request != limit
 BestEffort: 无request和limit
@@ -252,18 +251,18 @@ Node Capacity：Node的硬件资源总量
 kube-reserved：给k8s系统进程预留的资源(包括kubelet、container runtime、node problem detector等，但不会给以pod形式起的k8s系统进程预留资源)
 system-reserved：给linux系统守护进程预留的资源
 ### CPU管理
-CPU资源池：all-（--kube-reserved 或 --system-reserved）
+CPU资源池（capcity）：all-（--kube-reserved 或 --system-reserved）
 绑核策略
 cpu-manager-policy：none
 不绑核，共享CPU资源池
 cpu-manager-policy：static
-可绑核，使用CPU资源池或者--reserved-cpus指定
+可绑核，使用CPU资源池或者--reserved-cpus指定，会优先使用--reserved-cpus指定的列表
 
 ## koordinator CPU manager
 针对混部场景下，需要对延迟敏感工作负载的Qos进行微调，以满足混部性能的要求，增强kubelet CPU编排功能
 ![cpu-qos-orchestration](./images/qos-cpu-orchestration.png)
 ### 资源池
-CPU Shared Pool:Burstable以及LSE类型使用之外的资源池
+CPU Shared Pool:Burstable以及LSE\LSR类型使用之外的资源池
 statically exclusive CPUs：Quarantee并且资源为整数类型以及LSE/LSR使用的一组独占CPU
 BE Shared Pool:BestEffort以及BE应用的Pod可以运行的CPU池
 
@@ -281,6 +280,16 @@ BE Shared Pool:BestEffort以及BE应用的Pod可以运行的CPU池
 - koordlet 会根据 Pod 创建/销毁等变化自动调整 CPU Shared Pool 的大小。如果 CPU Shared Pool 发生变化，koordlet 应该更新所有使用共享池的 LS/K8s Burstable Pod 的 cgroups
 - 如果 Pod 的 annotationsscheduling.koordinator.sh/resource-status 中指定了对应的 CPU Shared Pool，koordlet 在配置 cgroup 时只需要绑定对应共享池的 CPU 即可
 
+### CPU编排原则
+1. LSE/LSR Pod 的 Request 和 Limit 必须相等，CPU 值必须是 1000 的整数倍。
+2. LSE Pod 分配的 CPU 是完全独占的，不得共享。如果节点是超线程架构，只保证逻辑核心维度是隔离的，但是可以
+过 CPUBindPolicyFullPCPUs 策略获得更好的隔离。
+3. LSR Pod 分配的 CPU 只能与 BE Pod 共享。
+4. LS Pod 绑定了与 LSE/LSR Pod 独占之外的共享 CPU 池。
+5. BE Pod 绑定使用节点中除 LSE Pod 独占之外的所有 CPU 。
+6. 如果 kubelet 的 CPU 管理器策略为 static 策略，则已经运行的 K8s Guaranteed Pods 等价于 Koordinator LSR。
+7. 如果 kubelet 的 CPU 管理器策略为 none 策略，则已经运行的 K8s Guaranteed Pods 等价于 Koordinator LS。
+8. 新创建但未指定 Koordinator QoS 的 K8s Guaranteed Pod 等价于 Koordinator LS。
 
 ### CPU调度编排
 CPUBindPolicy定义了CPU绑定策略。
@@ -293,6 +302,26 @@ CPUExclusivePolicy定了CPU独占策略，可以帮助解决扰邻问题
 CPUExclusivePolicyDefault：不执行任何策略
 CPUExclusivePolicyPCPULevel： 在分配逻辑CPU时，尽量避免已经被同一个独占策略申请的物理核。是对CPUBindPolicySpreadByPCPUs策略的补充。
 CPUExclusivePolicyNUMANodeLevel：在分配逻辑 CPU 时，尽量避免 NUMA 节点已经被相同的独占策略申请。如果没有满足策略的 NUMA 节点，则降级为CPUExclusivePolicyPCPULevel策略
+
+### Numa调度编排
+
+#### Numa分配策略
+标签 node.koordinator.sh/numa-allocate-strategy 表示在调度时如何选择满意的 NUMA 节点。下面是具体的值定义：
+
+MostAllocated 表示从可用资源最少的 NUMA 节点分配。
+LeastAllocated 表示从可用资源最多的 NUMA 节点分配。
+DistributeEvenly 表示在 NUMA 节点上平均分配 CPU。
+
+#### NUMA 拓扑对齐策略
+标签 node.koordinator.sh/numa-topology-alignment-policy 表示如何根据 NUMA 拓扑对齐资源分配。策略语义遵循 K8s 社区。相当于 NodeResourceTopology 中的 TopologyPolicies 字段，拓扑策略 SingleNUMANodePodLevel 和 SingleNUMANodeContainerLevel 映射到 SingleNUMANode 策略。
+
+None 是默认策略，不执行任何拓扑对齐。
+BestEffort 表示优先选择拓扑对齐的 NUMA Node，如果没有，则继续为 Pods 分配资源。
+Restricted 表示每个 Pod 在 NUMA 节点上请求的资源是拓扑对齐的，如果不是，koord-scheduler 会在调度时跳过该节点。
+SingleNUMANode 表示一个 Pod 请求的所有资源都必须在同一个 NUMA 节点上，如果不是，koord-scheduler 调度时会跳过该节点。
+如果节点的 Label 中没有 node.koordinator.sh/numa-topology-alignment-policy，并且 NodeResourceTopology中的TopologyPolicies=None，则按照 koord-scheduler 配置的策略执行。
+
+如果同时定义了 Node 中的 node.koordinator.sh/numa-topology-alignment-policy 和 NodeResourceTopology 中的 TopologyPolicies=None，则首先使用 node.koordinator.sh/numa-topology-alignment-policy
 
 
 
