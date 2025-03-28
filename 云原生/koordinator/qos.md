@@ -123,19 +123,19 @@ memory.kmem.tcp.limit_in_bytes  memory.move_charge_at_immigrate
 | memory.oom_control              | 设置/显示oom controls相关的配置                              |
 | memory.numa_stat                | 显示numa相关的内存                                           |
 
-## QOS
+# QOS
 
-### CPU
+## CPU
 
 为LS、BE类型的Pod配置对应的CPU [Group Identity](https://help.aliyun.com/zh/alinux/user-guide/group-identity-feature#task-2129392)的优先级。Group Identity可以为每一个CPU cgroup设置身份标识，系统内核在调度包含具有身份标识的任务时，会根据不同的优先级做相应处理。
 
-#### Group Identity
+### Group Identity
 
 Alibaba Cloud Linux 2（内核版本`4.19.91-24.al7`开始）和Alibaba Cloud Linux 3（内核版本`5.10.46-7.al8` 开始）支持Group Identity功能 ，您可以通过该功能为每一个CPU cgroup设置不同的身份标识，以区分不同CPU cgroup中进程任务的优先级。
 
 为CPU cgroup新增了配置调度优先级的接口，且不同优先级的任务具有以下特点。
 
-### Memory
+## Memory
 
 在Kubernetes集群，为了确保工作负载Pod能够高效、安全地运行，Kubernetes在资源使用层面引入了资源请求Request和资源限制Limit模型，容器内存情况如下图所示。
 
@@ -153,9 +153,9 @@ Alibaba Cloud Linux 2（内核版本`4.19.91-24.al7`开始）和Alibaba Cloud Li
 
 需要说明的是Kubernetes在社区1.22版本中提供的容器内存QoS（[Memory QoS](https://kubernetes.io/docs/concepts/workloads/pods/pod-qos/#memory-qos-with-cgroup-v2)）特性，仅支持cgroup v2接口，需要在kubelet上手动配置开启，ack-koordinator组件结合不同Alibaba Cloud Linux内核版本提供了容器内存QoS保障的能力，支持依据Pod参数自动配置内存子系统（Memcg），为容器开启[Memcg QoS](https://help.aliyun.com/zh/alinux/user-guide/memcg-qos-function-ensures-system-stability-and-response-speed?spm=a2c4g.11186623.0.0.5d9134f02y4VJ5#concept-2482889)、[Memcg后台异步回收](https://help.aliyun.com/zh/alinux/user-guide/memcg-backend-asynchronous-reclaim#task-2487938)、[Memcg全局最低水位线分级](https://help.aliyun.com/zh/alinux/user-guide/memcg-global-minimum-watermark-rating#task-2492619)等能力
 
-### network
+## network
 目前看有两种类型的网络带宽限制
-#### cgroup
+### cgroup
 
 使用cgroup控制网络资源的基本思想是将cgroup与已经存在的能提供分类和调度网络数据包功能的网络数据包分类器和调度框架连接起来。
 
@@ -166,26 +166,27 @@ Alibaba Cloud Linux 2（内核版本`4.19.91-24.al7`开始）和Alibaba Cloud Li
 
 流量分类(traffic class)可以以树的形式来组织，也可以包含任何数量的队列规则(qdisc)来实现优先级、带宽限制或公平队列。流量分类必须分配到网络接口(network interface)，因此，如果一个cgroup发送数据到多个网络接口，就需要为每一个网络接口维护一个流量类型
 
-#### 网络插件
+### 网络插件
 另外一种思路时基于网络插件实现网络带宽限制，例如koordinator使用terway网络插件进行带宽限制
 目前看网络插件都是基于ebpf这些内核模块做流量带宽限制
-## 其他策略
 
-### CPU Burst
 
+# CPU Burst
 动态调整cfs_quota
 
-### CPU Suppress
+# Suppress
+## CPU Suppress
 ![cpu-suppress](./images/cpu-suppress.svg)
 根据压制策略动态调整cfs_quota或者cpuset
 
-### CPU Evict
+# Evict
+## CPU Evict
 基于CPU饱和度的驱逐策略
 
-### Memory Evict
+## Memory Evict
 基于内存用量的驱逐策略
 
-### 干扰检测
+# 干扰检测
 若您使用CPI Collector，请确保您的机器支持获取Cycles、Instructions这两个Kernel PMU（Performance Monitoring Unit）事件
 ```
 $ perf list
@@ -202,11 +203,11 @@ List of pre-defined events (to be used in -e):
 ```
 
 
-## LLC&MBA
+# LLC&MBA
 
 基于内核RDT技术实现
 
-### RDT
+## RDT
 
 RDT技术全称 Resource Director Technology，RDT技术提供了LLC（Last Level Cache）以及MB（Memory Bandwidth）内存带宽的分配和监控能力。
 
