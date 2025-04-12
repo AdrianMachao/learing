@@ -35,6 +35,7 @@ conn.sock：用于迁移连接
 5. Server 回复响应到 New MOSN
 6. New MOSN 通过 MOSN 传递来的 TCP1 的拷贝，回复响应到 Client
 
+# 服务预热
 
 # reference
 https://mosn.io/docs/products/structure/core-concept/

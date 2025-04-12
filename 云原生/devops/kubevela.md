@@ -59,24 +59,131 @@ KubeVela 本身是一个的应用交付与管理控制平面，它架在 Kuberne
 ![kubevela-programmable](./images/kubevela-programmable.png)
 
 # Iac实现
-会创建一个config对象，包括了需要申请的Iac信息
-```
-APIVersion: apps/v1
-Kind: Configuration
-Name: aliyun-oss
-```
-控制器会调用对应的提供商，例如aliyun，会将生成的账号密码作为环境注入到应用对象中
-```
-APIVersion: apps/v1
-Kind: Application
-Spec:
-  Containers:
-    - name: nginx
-      env: 
-        - username: zhangsan
-          password: 123
-```
+## Terraform
+### Provide
+用来与云厂商交互，provider的名称、区域、访问凭证的配置，由Configuration资源的providerRef属性引用。
+### Configuration
+资源配置文件，terraform controller会根据Configuration资源的spec转成tf代码文件然后启动个job去apply。
 
+## kubevela使用流程
+1. kubevela创建Provider对象，包含对应云厂商的信息
+```
+vela config create default -t terraform-alibaba ALICLOUD_REGION=<Region> ALICLOUD_SECRET_KEY=<Secret> ALICLOUD_ACCESS_KEY=<AccessKey>
+```
+对应到terraform中为创建Provider对象
+```
+apiVersion: terraform.core.oam.dev/v1beta1
+kind: Provider
+metadata:
+  name: alibaba-sample
+spec:
+  provider: alicloud
+  region: cn-beijing
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: vela-system
+      name: alicloud-account-creds
+      key: credentials
+```
+2. kubevela创建一个OSS bucket示例
+```
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: provision-cloud-resource-sample
+spec:
+  components:
+    - name: sample-oss
+      type: alibaba-oss
+      properties:
+        bucket: vela-website-0911
+        acl: private
+        writeConnectionSecretToRef:
+          name: oss-conn
+```
+对应到terraform中为创建一个Configuration对象，包括需要申请的信息，以及引用的provider对象
+```
+apiVersion: terraform.core.oam.dev/v1beta1
+kind: Configuration
+metadata:
+  name: alibaba-oss-bucket-sample
+spec:
+  hcl: |
+    resource "alicloud_oss_bucket" "bucket-acl" {
+      bucket = var.bucket
+      acl = var.acl
+    }
+
+    output "BUCKET_NAME" {
+      value = "${alicloud_oss_bucket.bucket-acl.bucket}.${alicloud_oss_bucket.bucket-acl.extranet_endpoint}"
+    }
+
+    variable "bucket" {
+      description = "OSS bucket name"
+      default = "vela-website"
+      type = string
+    }
+
+    variable "acl" {
+      description = "OSS bucket ACL, supported 'private', 'public-read', 'public-read-write'"
+      default = "private"
+      type = string
+    }
+
+  backend:
+    secretSuffix: oss
+    inClusterConfig: true
+
+  variable:
+    bucket: "vela-website"
+    acl: "private"
+
+  writeConnectionSecretToRef:
+    name: oss-conn
+    namespace: default
+
+  providerRef:
+    name: alibaba-sample
+    namespace: default
+```
+terraform controller会根据Configuration资源的spec转成tf代码文件然后启动个job去apply，结果输出到secrect中
+3. kubevela会监听对应的secret，使用运维特征 service-binding，将结果更新到yaml中
+```
+cat <<EOF | vela up -f -
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: webapp
+spec:
+  components:
+    - name: rds-server
+      type: webservice
+      properties:
+        image: zzxwill/flask-web-application:v0.3.1-crossplane
+        ports: 80
+      traits:
+        - type: service-binding
+          properties:
+            envMappings:
+              # 环境变量与 db-conn 密钥形成映射
+              DB_PASSWORD:
+                secret: db-conn                             
+              endpoint:
+                secret: db-conn
+                key: DB_PUBLIC_HOST          
+              username:
+                secret: db-conn
+                key: DB_USER
+    - name: sample-db
+      type: alibaba-rds
+      properties:
+        instance_name: sample-db
+        account_name: oamtest
+        password: U34rfwefwefffaked
+        writeConnectionSecretToRef:
+          name: db-conn
+```
 # 总结
 基于工作流将各个阶段各种能力串起来
 每种能力插件化，可以支持各种市场上主流的相关产品

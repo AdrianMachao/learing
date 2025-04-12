@@ -259,7 +259,7 @@ karmada scheduler 在调度每个 k8s 原生 API 资源对象（包含 CRD 资�
 score 扩展点上的调度算法插件为每个经过上一步过滤的集群计算评分 karmada scheduler 对每个经过上一步过滤的成员集群调用每个插件的 Score 方法，该方法都能返回一个 int64 类型的评分结果。
 
 
-这种着重说一下调度功能，调度主要涉及三个组件estimator、scheduler、descheduelr
+这种着重说一下调度功能，调度主要涉及三个组件estimator、scheduler、descheduler
 
 ## 触发时机
 可以看到这里实现了三种场景的调度：
@@ -280,6 +280,11 @@ score 扩展点上的调度算法插件为每个经过上一步过滤的集群�
 ## descheduler
 重调度功能，定时检测集群调度后资源不足无法成功启动的情况，调度策略为动态划分（dynamic division）时才会生效，karmada-descheduler 将每隔一段时间检测一次所有部署，默认情况下每 2 分钟检测一次
 每个周期中，它会通过调用 karmada-scheduler-estimator 找出部署在目标调度集群中有多少不可调度的副本，然后更新 ResourceBinding 资源的 Clusters[i].Replicas 字段，并根据当前情况触发 karmada-scheduler 执行“Scale Schedule”
+
+## workload rebalance
+1. 集群故障恢复调度
+2. 应用故障恢复调度
+3. 聚合调度
 
 ## 调度策略
 描述在多集群中有哪些调度策略
@@ -324,3 +329,5 @@ score 扩展点上的调度算法插件为每个经过上一步过滤的集群�
 联邦集群中提交任务crd，分发到子集群后进行执行
 ## 支持配额等优先级调度
 可以参考voclano-global项目，联邦调度，但目前看主要是逻辑上的，不会下发到底层子集群做实际物理隔离
+
+# Reference

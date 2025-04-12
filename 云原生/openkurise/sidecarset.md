@@ -158,7 +158,8 @@ spec:
 1. Pod创建时，注入热升级容器
 2. 原地升级时，完成热升级流程
 
+# Mosn原地升级流程
 
 
-
-
+# Reference
+https://mosn.io/blog/posts/mosn-sidecarset-hotupgrade/
